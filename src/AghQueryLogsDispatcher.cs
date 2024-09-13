@@ -64,7 +64,7 @@ public class AghQuerylogsDispatcher(
         await using var fileStream = new FileStream(logFilePath, new FileStreamOptions
         {
             Access  = FileAccess.Read,
-            Share   = FileShare.ReadWrite,
+            Share   = FileShare.Read,
             Mode    = FileMode.Open,
             Options = FileOptions.Asynchronous
         });
@@ -72,18 +72,53 @@ public class AghQuerylogsDispatcher(
         using var reader = new StreamReader(fileStream);
         fileStream.Seek(lastPosition, SeekOrigin.Begin);
 
-        string? line;
-        while ((line = await reader.ReadLineAsync(stoppingToken)) is not null)
-        {
-            var log = await aghQuerylogProcessor.Deserialize(line, stoppingToken);
-            if (log is null)
-            {
-                logger.LogWarning("Failed to deserialize log: {line}", line);
-                continue;
-            }
+        var logsToDispatch = new List<dynamic>();
 
-            await dispatcher.Dispatch(log, stoppingToken);
-            _checkpoints[logFilePath] = fileStream.Position;
+        while (true)
+        {
+            var line = await reader.ReadLineAsync(stoppingToken);
+            if (line is null)
+            {
+                break;
+            }
+            try
+            {
+                var log = await aghQuerylogProcessor.Deserialize(line, stoppingToken);
+                if (log is null)
+                {
+                    logger.LogWarning("Failed to deserialize log: {line}", line);
+                    continue;
+                }
+
+                logsToDispatch.Add(log);
+
+                if (logsToDispatch.Count >= 100)
+                {
+                    await dispatcher.Dispatch(logsToDispatch, stoppingToken);
+                    logsToDispatch.Clear();
+                }
+
+                _checkpoints[logFilePath] = fileStream.Position;
+
+                if (stoppingToken.IsCancellationRequested)
+                {
+                    logger.LogInformation("Cancellation requested. Stopping processing.");
+                    await dispatcher.Dispatch(logsToDispatch, stoppingToken);
+                    logsToDispatch.Clear();
+                    await SaveCheckpoints(stoppingToken);
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError("Failed to process Line: {line}: {error}", line, ex.Message);
+            }
+        }
+
+        if (logsToDispatch.Count > 0)
+        {
+            await dispatcher.Dispatch(logsToDispatch, stoppingToken);
+            logsToDispatch.Clear();
         }
 
         logger.LogInformation(

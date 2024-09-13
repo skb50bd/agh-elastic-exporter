@@ -1,10 +1,12 @@
-﻿using System.Net;
+﻿using System.Collections.Concurrent;
+using System.Net;
 
 namespace AdGuardHomeElasticLogs;
 
 public class PtrClients(ILogger<PtrClients> logger)
 {
-    private readonly Dictionary<string, (string? hostname, DateTimeOffset timestamp)> _ptrCache = [];
+    private readonly IDictionary<string, (string? hostname, DateTimeOffset timestamp)> _ptrCache =
+        new ConcurrentDictionary<string, (string? hostname, DateTimeOffset timestamp)>();
 
     public async Task<string?> LookupHostname(string? ipAddress, CancellationToken ct)
     {

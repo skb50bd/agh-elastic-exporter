@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using Nest;
 using Polly;
 using Polly.Retry;
+using System.Diagnostics;
 
 namespace AdGuardHomeElasticLogs;
 
@@ -36,6 +37,7 @@ public class Dispatcher
         var settings =
             connectionSettings
                 .DefaultIndex(configMonitor.CurrentValue.DefaultIndex)
+                .DisableDirectStreaming()
                 .BasicAuthentication(
                     configMonitor.CurrentValue.ElasticsearchUsername,
                     configMonitor.CurrentValue.ElasticsearchPassword
@@ -66,14 +68,18 @@ public class Dispatcher
 
     public async Task Dispatch(dynamic log, CancellationToken ct)
     {
+        var sw = Stopwatch.StartNew();
         var timestamp     = log.timestamp;
-        var indexName     = _configMonitor.CurrentValue.DefaultIndex.Replace("*", $"{timestamp:yyyy-MM-dd}");
+        var indexName     = _configMonitor.CurrentValue.DefaultIndex.Replace(
+                                "*",
+                                $"{timestamp:yyyy-MM-dd}"
+                            );
 
         await _retryPolicy.ExecuteAsync(async () => {
             var indexResponse = await _elasticClient.IndexAsync(
-                document: log as object,
-                selector: i => i.Index(indexName),
-                ct: ct
+                document : log as object,
+                selector : i => i.Index(indexName),
+                ct       : ct
             );
 
             if (!indexResponse.IsValid)
@@ -85,5 +91,48 @@ public class Dispatcher
                 );
             }
         });
+
+        sw.Stop();
+        _logger.LogTrace(
+            "Indexed log in {elapsed} ms",
+            sw.ElapsedMilliseconds
+        );
+    }
+
+    public async Task Dispatch(IEnumerable<dynamic> logs, CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+        var timestamp = logs.First().timestamp;
+        var indexName = _configMonitor.CurrentValue.DefaultIndex.Replace("*", $"{timestamp:yyyy-MM-dd}");
+
+        await _retryPolicy.ExecuteAsync(async () => {
+            var indexResponse = await _elasticClient.IndexManyAsync(
+                objects           : logs.OfType<object>(),
+                index             : indexName,
+                cancellationToken : ct
+            );
+
+            if (!indexResponse.IsValid)
+            {
+                if (indexResponse.OriginalException is null
+                    && indexResponse.DebugInformation.Contains("Invalid NEST response built from a successful (200) low level call")
+                )
+                {
+                    return;
+                }
+
+                _logger.LogError(
+                    "Failed to index log: {error} - {debugInfo}",
+                    indexResponse.OriginalException?.Message,
+                    indexResponse.DebugInformation
+                );
+            }
+        });
+
+        sw.Stop();
+        _logger.LogTrace(
+            "Indexed log in {elapsed} ms",
+            sw.ElapsedMilliseconds
+        );
     }
 }
