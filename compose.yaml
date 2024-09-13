@@ -1,0 +1,18 @@
+services:
+  agh-elastic-exporter:
+    image: registry.brotal.net/agh-elastic-exporter:latest
+    container_name: agh-elastic-exporter
+    build:
+      context: .
+      dockerfile: src/Dockerfile
+    restart: unless-stopped
+    user: root
+    volumes:
+      - ./work:/etc/checkpoint:rw
+      - ./conf/appsettings.json:/app/appsettings.json:ro
+      - ./path/to/adguardhome/conf/AdGuardHome.yaml:/etc/AdGuardHome.yaml:ro
+      - ./path/to/adguardhome/work/data/:/var/logs/agh/:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
